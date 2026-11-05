@@ -1807,11 +1807,19 @@ string(REPLACE "${group_site}"
 set(optimized_fill_site "            std::memset(ptr + offset * PageSize, fill_pattern, PageSize);")
 string(FIND "${pool_source}" "${optimized_fill_site}" optimized_fill_at)
 if(optimized_fill_at LESS 0)
-    message(FATAL_ERROR "Pinned optimized allocation fill changed; review the guest memory service.")
+    # Modern Eglantine already calls HostMemory::ClearBackingRegion for an
+    # allocation, which can lazily clear unchanged backing without raw memset.
+    # Keep that API instead of forcing an older pointer-based PS5 substitution.
+    string(FIND "${pool_source}" "device_memory.buffer.ClearBackingRegion(" upstream_fill_at)
+    if(upstream_fill_at LESS 0)
+        message(FATAL_ERROR "Pinned optimized allocation fill changed; review the guest memory service.")
+    endif()
+    message(STATUS "Using upstream optimized guest-memory backing clear")
+else()
+    string(REPLACE "${optimized_fill_site}"
+        "            ::Common::FillGuestMemory(ptr + offset * PageSize, fill_pattern, PageSize);"
+        pool_source "${pool_source}")
 endif()
-string(REPLACE "${optimized_fill_site}"
-    "            ::Common::FillGuestMemory(ptr + offset * PageSize, fill_pattern, PageSize);"
-    pool_source "${pool_source}")
 write_derived("${PORT_BUILD_DIR}/k_memory_manager.cpp" "${pool_source}")
 file(READ "${PROJECT_SOURCE_DIR}/src/core/hle/kernel/k_page_heap.cpp" page_heap_source)
 set(page_heap_free_site "void KPageHeap::Free(KPhysicalAddress addr, size_t num_pages) {\n    // Freeing no pages is a no-op.\n    if (num_pages == 0) {\n        return;\n    }\n")
