@@ -280,12 +280,19 @@ endif()
 # Keep the upstream implementation and change only its absent-target path.
 file(READ "${PROJECT_SOURCE_DIR}/src/dynarmic/src/dynarmic/backend/x64/emit_x64.cpp" emitter)
 set(patch_lookup "    const PatchInformation& patch_info = patch_information[target_desc];")
-string(FIND "${emitter}" "${patch_lookup}" patch_lookup_offset)
-if(patch_lookup_offset LESS 0)
-    message(FATAL_ERROR "Pinned JIT patch lookup changed")
+string(FIND "${emitter}" "    const auto it = patch_information.find(target_desc);" upstream_patch_lookup)
+if(NOT upstream_patch_lookup LESS 0)
+    # New Dynarmic already looks up patch sites without inserting an empty
+    # PatchInformation record. Keep the new packed-offset patch representation.
+    message(STATUS "Using upstream Dynarmic JIT patch lookup")
+else()
+    string(FIND "${emitter}" "${patch_lookup}" patch_lookup_offset)
+    if(patch_lookup_offset LESS 0)
+        message(FATAL_ERROR "Pinned JIT patch lookup changed")
+    endif()
+    string(REPLACE "${patch_lookup}"
+        "    const auto patch = patch_information.find(target_desc);\n    if (patch == patch_information.end()) return;\n    const PatchInformation& patch_info = patch->second;" emitter "${emitter}")
 endif()
-string(REPLACE "${patch_lookup}"
-    "    const auto patch = patch_information.find(target_desc);\n    if (patch == patch_information.end()) return;\n    const PatchInformation& patch_info = patch->second;" emitter "${emitter}")
 if(PS5_NATIVE)
     # PS5 has no perf-map writer. Its no-op still evaluates the formatted name.
     string(REPLACE "    PerfMapRegister(entrypoint, code.getCurr(), LocationDescriptorToFriendlyName(descriptor));"
