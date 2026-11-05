@@ -134,7 +134,7 @@ void RasterizerVulkan::DispatchCompute() {"""),
 '''),
     # Preserve the pinned core's vertex repack layout block between these two calls.
     ('    pipeline->SetEngine(maxwell3d, gpu_memory);',
-     '    pipeline->SetEngine(maxwell3d, gpu_memory);\\n'
+     '    pipeline->SetEngine(maxwell3d, gpu_memory);\n'
      '    ::Eden::Performance::Mark(::Eden::Performance::draw_lock_wait, phase);'),
     ('''    if (Profile::Scope scope{Profile::Zone::Configure}; !pipeline->Configure(is_indexed)) {
         report_failure("configure failed");
