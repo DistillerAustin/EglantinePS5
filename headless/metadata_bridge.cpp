@@ -48,6 +48,7 @@
 #include "core/hle/service/ns/language.h"
 #include "core/hle/service/set/settings_types.h"
 #include "core/loader/loader.h"
+#include "core/loader/nup.h"
 
 namespace {
 constexpr std::array<const char*, 18> language_names{
@@ -210,6 +211,12 @@ uint64_t eden_game_title_id(const char* rom_path) {
     std::string path = rom_path;
     std::transform(path.begin(), path.end(), path.begin(),
                    [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    if (path.ends_with(".nup")) {
+        // The NUP loader reads the base title ID from the packed program metadata.
+        Loader::AppLoader_NUP package(file);
+        u64 title_id{};
+        return package.ReadProgramId(title_id) == Loader::ResultStatus::Success ? title_id : 0;
+    }
     if (path.ends_with(".xci")) {
         FileSys::XCI image(file);
         return image.GetStatus() == Loader::ResultStatus::Success ? image.GetProgramTitleID() : 0;
@@ -233,6 +240,27 @@ int eden_extract_game_metadata(const char* rom_path, const char* keys_dir,
     std::string path = rom_path;
     std::transform(path.begin(), path.end(), path.begin(),
                    [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    if (path.ends_with(".nup")) {
+        Loader::AppLoader_NUP package(file);
+        int result = 0;
+        std::string name;
+        if (package.ReadTitle(name) == Loader::ResultStatus::Success && Eden::UsableName(name)) {
+            const std::string safe_name = Eden::PlainName(name);
+            std::snprintf(title, title_capacity, "%s", safe_name.c_str());
+            result |= EDEN_METADATA_TITLE;
+        }
+        FileSys::NACP control{};
+        if (package.ReadControlData(control) == Loader::ResultStatus::Success) {
+            GameLanguages()[rom_path] = static_cast<uint32_t>(control.raw.supported_languages);
+        }
+        std::vector<u8> icon;
+        if (package.ReadIcon(icon) == Loader::ResultStatus::Success && !icon.empty() &&
+            icon.size() <= (64u << 20) &&
+            WriteTgaBytes(icon.data(), icon.size(), cover_tga_path, 4096)) {
+            result |= EDEN_METADATA_COVER;
+        }
+        return result;
+    }
     const bool xci = path.size() >= 4 && path.substr(path.size() - 4) == ".xci";
     const auto romfs = OpenControlRomFs(file, xci);
     if (!romfs) return 0;
@@ -260,6 +288,13 @@ uint32_t eden_game_supported_languages(const char* rom_path, const char* keys_di
         std::string path = rom_path;
         std::transform(path.begin(), path.end(), path.begin(),
                        [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+        if (path.ends_with(".nup")) {
+            Loader::AppLoader_NUP package(file);
+            FileSys::NACP control{};
+            if (package.ReadControlData(control) != Loader::ResultStatus::Success) return 0;
+            return GameLanguages()[rom_path] =
+                static_cast<uint32_t>(control.raw.supported_languages);
+        }
         const auto romfs = OpenControlRomFs(file, path.ends_with(".xci"));
         if (!romfs) return 0;
         return GameLanguages()[rom_path] = ReadLanguages(romfs);

@@ -21,6 +21,17 @@ function(multiplayer_remove_between variable begin_marker end_marker)
     set(${variable} "${prefix}${suffix}" PARENT_SCOPE)
 endfunction()
 
+# Eglantine's newer core has its own per-socket emulated polling, deferred BSD waits,
+# packet subscriptions and thread-safe proxy queues. Retain those mechanisms instead of
+# overwriting them with the older PS5 socket-rewrite implementation.
+file(READ "${MULTIPLAYER_SOURCE}/src/core/internal_network/socket_proxy.h" upstream_proxy_header)
+string(FIND "${upstream_proxy_header}" "    Protocol protocol{};" modern_socket_marker)
+set(EDEN_MP_MODERN FALSE)
+if(NOT modern_socket_marker LESS 0)
+    set(EDEN_MP_MODERN TRUE)
+    message(STATUS "Using modern upstream multiplayer socket/bsd implementation")
+endif()
+
 file(READ "${MULTIPLAYER_SOURCE}/src/network/packet.h" packet_header)
 multiplayer_replace(packet_header "#include <array>" "#include <array>\n#include <string>")
 multiplayer_replace(packet_header [=[    out_data.resize(size);
@@ -278,6 +289,8 @@ configure_file("${MULTIPLAYER_OUTPUT}/lan_discovery.cpp.in"
     "${MULTIPLAYER_OUTPUT}/lan_discovery.cpp" COPYONLY)
 
 set(MULTIPLAYER_SOCKET_HEADERS "${MULTIPLAYER_OUTPUT}/socket-headers")
+file(MAKE_DIRECTORY "${MULTIPLAYER_SOCKET_HEADERS}")
+if(NOT EDEN_MP_MODERN)
 # Remove the prior generated location: quoted includes search beside the derived .cpp first.
 file(REMOVE "${MULTIPLAYER_OUTPUT}/core/internal_network/sockets.h"
     "${MULTIPLAYER_OUTPUT}/core/internal_network/socket_proxy.h"
@@ -290,11 +303,15 @@ multiplayer_replace(sockets_header "    virtual bool IsOpened() const = 0;"
 file(WRITE "${MULTIPLAYER_SOCKET_HEADERS}/core/internal_network/sockets.h.in" "${sockets_header}")
 configure_file("${MULTIPLAYER_SOCKET_HEADERS}/core/internal_network/sockets.h.in"
     "${MULTIPLAYER_SOCKET_HEADERS}/core/internal_network/sockets.h" COPYONLY)
+endif()
 file(READ "${MULTIPLAYER_SOURCE}/src/core/internal_network/network.cpp" socket_network)
 multiplayer_replace(socket_network "#include <algorithm>" "#include <algorithm>\n#include <chrono>")
-multiplayer_replace(socket_network "std::pair<s32, Errno> Poll(std::vector<PollFD>& pollfds, s32 timeout) {"
-    "static std::pair<s32, Errno> PollNative(std::vector<PollFD>& pollfds, s32 timeout) {")
-multiplayer_replace(socket_network "Socket::~Socket() {" "#include \"multiplayer_poll.inc\"\n\nSocket::~Socket() {")
+if(NOT EDEN_MP_MODERN)
+    # The old core needed a PS5 proxy-poll bridge; the new core handles this natively.
+    multiplayer_replace(socket_network "std::pair<s32, Errno> Poll(std::vector<PollFD>& pollfds, s32 timeout) {"
+        "static std::pair<s32, Errno> PollNative(std::vector<PollFD>& pollfds, s32 timeout) {")
+    multiplayer_replace(socket_network "Socket::~Socket() {" "#include \"multiplayer_poll.inc\"\n\nSocket::~Socket() {")
+endif()
 file(WRITE "${MULTIPLAYER_OUTPUT}/socket_network.cpp.in" "${socket_network}")
 configure_file("${MULTIPLAYER_OUTPUT}/socket_network.cpp.in" "${MULTIPLAYER_OUTPUT}/socket_network.cpp" COPYONLY)
 
@@ -318,6 +335,7 @@ file(WRITE "${MULTIPLAYER_OUTPUT}/network_interface.cpp.in" "${interface_source}
 configure_file("${MULTIPLAYER_OUTPUT}/network_interface.cpp.in"
     "${MULTIPLAYER_OUTPUT}/network_interface.cpp" COPYONLY)
 
+if(NOT EDEN_MP_MODERN)
 file(READ "${MULTIPLAYER_SOURCE}/src/core/internal_network/socket_proxy.h" proxy_header)
 multiplayer_replace(proxy_header "    bool IsOpened() const override;"
     "    bool IsOpened() const override;\n    std::optional<PollEvents> PollProxy(PollEvents events) override;")
@@ -471,6 +489,7 @@ multiplayer_replace(bsd_source "file_descriptors[fd]" "descriptor_entry")
 string(APPEND bsd_source "\nnamespace Service::Sockets {\n#include \"multiplayer_bsd.inc\"\n}\n")
 file(WRITE "${MULTIPLAYER_OUTPUT}/bsd.cpp.in" "${bsd_source}")
 configure_file("${MULTIPLAYER_OUTPUT}/bsd.cpp.in" "${MULTIPLAYER_OUTPUT}/bsd.cpp" COPYONLY)
+endif()
 
 if(TARGET network)
     get_target_property(packet_sources network SOURCES)
@@ -488,11 +507,22 @@ if(TARGET network)
 endif()
 if(TARGET core)
     get_target_property(ldn_sources core SOURCES)
-    list(REMOVE_ITEM ldn_sources hle/service/ldn/lan_discovery.cpp internal_network/socket_proxy.cpp internal_network/network.cpp internal_network/network_interface.cpp hle/service/sockets/bsd.cpp)
-    set_property(TARGET core PROPERTY SOURCES "${ldn_sources}")
-    target_sources(core PRIVATE "${MULTIPLAYER_OUTPUT}/lan_discovery.cpp"
-        "${MULTIPLAYER_OUTPUT}/socket_proxy.cpp" "${MULTIPLAYER_OUTPUT}/socket_network.cpp"
-        "${MULTIPLAYER_OUTPUT}/network_interface.cpp" "${MULTIPLAYER_OUTPUT}/bsd.cpp")
+    if(EDEN_MP_MODERN)
+        # Retain the newer upstream socket_proxy.cpp and bsd.cpp (which have different
+        # interfaces and safer packet-queue handling), while keeping the PS5 network
+        # interface and transport fixes.
+        list(REMOVE_ITEM ldn_sources hle/service/ldn/lan_discovery.cpp internal_network/network.cpp internal_network/network_interface.cpp)
+        set_property(TARGET core PROPERTY SOURCES "${ldn_sources}")
+        target_sources(core PRIVATE "${MULTIPLAYER_OUTPUT}/lan_discovery.cpp"
+            "${MULTIPLAYER_OUTPUT}/socket_network.cpp"
+            "${MULTIPLAYER_OUTPUT}/network_interface.cpp")
+    else()
+        list(REMOVE_ITEM ldn_sources hle/service/ldn/lan_discovery.cpp internal_network/socket_proxy.cpp internal_network/network.cpp internal_network/network_interface.cpp hle/service/sockets/bsd.cpp)
+        set_property(TARGET core PROPERTY SOURCES "${ldn_sources}")
+        target_sources(core PRIVATE "${MULTIPLAYER_OUTPUT}/lan_discovery.cpp"
+            "${MULTIPLAYER_OUTPUT}/socket_proxy.cpp" "${MULTIPLAYER_OUTPUT}/socket_network.cpp"
+            "${MULTIPLAYER_OUTPUT}/network_interface.cpp" "${MULTIPLAYER_OUTPUT}/bsd.cpp")
+    endif()
     target_include_directories(core BEFORE PRIVATE "${MULTIPLAYER_SOCKET_HEADERS}" "${MULTIPLAYER_OUTPUT}")
     target_include_directories(core PRIVATE "${CMAKE_CURRENT_LIST_DIR}")
     target_link_libraries(core PRIVATE zstd::zstd)

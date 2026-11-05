@@ -263,19 +263,36 @@ if(EDEN_SHARED_JIT)
     eden_shared_jit_sources()
 endif()
 if(PS5_NATIVE OR CMAKE_SYSTEM_NAME STREQUAL "Linux")
-    eden_reg_alloc_sources()
+    # The newer Eglantine/Dynarmic register allocator already skips released
+    # locations after each instruction. Its EndOfAllocScope implementation is no
+    # longer byte-identical to the pinned old core, so do not rewrite the JIT's
+    # allocator until the PS5-specific optimization is rebased and tested.
+    file(READ "${PROJECT_SOURCE_DIR}/src/dynarmic/src/dynarmic/backend/x64/reg_alloc.h" eden_upstream_ra)
+    string(FIND "${eden_upstream_ra}" "if (!iter.IsReleased())" eden_upstream_ra_skip)
+    if(NOT eden_upstream_ra_skip LESS 0)
+        message(STATUS "Using newer upstream Dynarmic register allocator without PS5 override")
+    else()
+        eden_reg_alloc_sources()
+    endif()
 endif()
 
 # Patch lookup must not create a large empty record for every compiled block.
 # Keep the upstream implementation and change only its absent-target path.
 file(READ "${PROJECT_SOURCE_DIR}/src/dynarmic/src/dynarmic/backend/x64/emit_x64.cpp" emitter)
 set(patch_lookup "    const PatchInformation& patch_info = patch_information[target_desc];")
-string(FIND "${emitter}" "${patch_lookup}" patch_lookup_offset)
-if(patch_lookup_offset LESS 0)
-    message(FATAL_ERROR "Pinned JIT patch lookup changed")
+string(FIND "${emitter}" "    const auto it = patch_information.find(target_desc);" upstream_patch_lookup)
+if(NOT upstream_patch_lookup LESS 0)
+    # New Dynarmic already looks up patch sites without inserting an empty
+    # PatchInformation record. Keep the new packed-offset patch representation.
+    message(STATUS "Using upstream Dynarmic JIT patch lookup")
+else()
+    string(FIND "${emitter}" "${patch_lookup}" patch_lookup_offset)
+    if(patch_lookup_offset LESS 0)
+        message(FATAL_ERROR "Pinned JIT patch lookup changed")
+    endif()
+    string(REPLACE "${patch_lookup}"
+        "    const auto patch = patch_information.find(target_desc);\n    if (patch == patch_information.end()) return;\n    const PatchInformation& patch_info = patch->second;" emitter "${emitter}")
 endif()
-string(REPLACE "${patch_lookup}"
-    "    const auto patch = patch_information.find(target_desc);\n    if (patch == patch_information.end()) return;\n    const PatchInformation& patch_info = patch->second;" emitter "${emitter}")
 if(PS5_NATIVE)
     # PS5 has no perf-map writer. Its no-op still evaluates the formatted name.
     string(REPLACE "    PerfMapRegister(entrypoint, code.getCurr(), LocationDescriptorToFriendlyName(descriptor));"
@@ -1790,11 +1807,19 @@ string(REPLACE "${group_site}"
 set(optimized_fill_site "            std::memset(ptr + offset * PageSize, fill_pattern, PageSize);")
 string(FIND "${pool_source}" "${optimized_fill_site}" optimized_fill_at)
 if(optimized_fill_at LESS 0)
-    message(FATAL_ERROR "Pinned optimized allocation fill changed; review the guest memory service.")
+    # Modern Eglantine already calls HostMemory::ClearBackingRegion for an
+    # allocation, which can lazily clear unchanged backing without raw memset.
+    # Keep that API instead of forcing an older pointer-based PS5 substitution.
+    string(FIND "${pool_source}" "device_memory.buffer.ClearBackingRegion(" upstream_fill_at)
+    if(upstream_fill_at LESS 0)
+        message(FATAL_ERROR "Pinned optimized allocation fill changed; review the guest memory service.")
+    endif()
+    message(STATUS "Using upstream optimized guest-memory backing clear")
+else()
+    string(REPLACE "${optimized_fill_site}"
+        "            ::Common::FillGuestMemory(ptr + offset * PageSize, fill_pattern, PageSize);"
+        pool_source "${pool_source}")
 endif()
-string(REPLACE "${optimized_fill_site}"
-    "            ::Common::FillGuestMemory(ptr + offset * PageSize, fill_pattern, PageSize);"
-    pool_source "${pool_source}")
 write_derived("${PORT_BUILD_DIR}/k_memory_manager.cpp" "${pool_source}")
 file(READ "${PROJECT_SOURCE_DIR}/src/core/hle/kernel/k_page_heap.cpp" page_heap_source)
 set(page_heap_free_site "void KPageHeap::Free(KPhysicalAddress addr, size_t num_pages) {\n    // Freeing no pages is a no-op.\n    if (num_pages == 0) {\n        return;\n    }\n")

@@ -132,17 +132,16 @@ void RasterizerVulkan::DispatchCompute() {"""),
     }()};
     ::Eden::Performance::Mark(::Eden::Performance::draw_pipeline, phase);
 '''),
-    ('''    pipeline->SetEngine(maxwell3d, gpu_memory);
-    if (Profile::Scope scope{Profile::Zone::Configure}; !pipeline->Configure(is_indexed)) {
+    # Preserve the pinned core's vertex repack layout block between these two calls.
+    ('    pipeline->SetEngine(maxwell3d, gpu_memory);',
+     '    pipeline->SetEngine(maxwell3d, gpu_memory);\n'
+     '    ::Eden::Performance::Mark(::Eden::Performance::draw_lock_wait, phase);'),
+    ('''    if (Profile::Scope scope{Profile::Zone::Configure}; !pipeline->Configure(is_indexed)) {
         report_failure("configure failed");
         return;
     }
 ''',
-     '''    pipeline->SetEngine(maxwell3d, gpu_memory);
-    // Waiting for both cache mutexes. SetEngine between them and here is two pointer assignments,
-    // and the hold itself carries on through what follows: the phases below measure it.
-    ::Eden::Performance::Mark(::Eden::Performance::draw_lock_wait, phase);
-    if (Profile::Scope scope{Profile::Zone::Configure}; !pipeline->Configure(is_indexed)) {
+     '''    if (Profile::Scope scope{Profile::Zone::Configure}; !pipeline->Configure(is_indexed)) {
         report_failure("configure failed");
         return;
     }
@@ -738,7 +737,8 @@ adapt('src/video_core/renderer_vulkan/vk_scheduler.cpp', 'vulkan_scheduler.cpp',
     ('            vk::Check(result);\n            break;\n        }\n    });\n    chunk->MarkSubmit();',
      '            vk::Check(result);\n            break;\n        }\n        GpuTimeCollect(device);\n    });\n    chunk->MarkSubmit();'),
     ('    const u64 signal_value = SubmitExecution(signal_semaphore, wait_semaphore);\n'
-     '    AllocateNewContext();\n    return signal_value;',
+     '    AllocateNewContext();\n    last_flush = std::chrono::steady_clock::now();\n'
+     '    flush_pending = false;\n    return signal_value;',
      '    const u64 signal_value = SubmitExecution(signal_semaphore, wait_semaphore);\n'
      '    if (::Eden::DevVulkan::sync_submissions) {\n        Wait(signal_value);\n    }\n'
      '    AllocateNewContext();\n    return signal_value;'),

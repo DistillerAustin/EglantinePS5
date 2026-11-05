@@ -124,13 +124,13 @@ std::string Lower(std::string text) {
     return text;
 }
 
-// A file the console can use: an NSP or XCI with a plain name.
+// A game container the console can use: an NSP, XCI or NUP with a plain name.
 bool GameFileName(const std::string& name) {
     if (name.size() < 5 || name.size() > 240) return false;
     for (const unsigned char c : name)
         if (c < 32 || c == 127 || c == '/' || c == '\\') return false;
     const std::string extension = Lower(name.substr(name.size() - 4));
-    return extension == ".nsp" || extension == ".xci";
+    return extension == ".nsp" || extension == ".xci" || extension == ".nup";
 }
 
 // A name as one part of a path: letters, digits, '-' and '_' stay, the rest is %XX.
@@ -242,7 +242,7 @@ std::string NormalTitleId(const std::string& text) {
     return id.size() == 16 && id != std::string(16, '0') ? id : std::string{};
 }
 
-// A source's game as the console takes it: its game file (the larger one when it has an .nsp and
+// A source's game as the console takes it: its game file (including NUP; the larger when it has an .nsp and
 // an .xci) and its updates and DLC; files the console cannot use are left out, and a game without a
 // game file (an update on its own) is no game.
 bool MakeGame(const std::string& source, const SourceGame& from, Game* game) {
