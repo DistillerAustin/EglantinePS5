@@ -263,7 +263,17 @@ if(EDEN_SHARED_JIT)
     eden_shared_jit_sources()
 endif()
 if(PS5_NATIVE OR CMAKE_SYSTEM_NAME STREQUAL "Linux")
-    eden_reg_alloc_sources()
+    # The newer Eglantine/Dynarmic register allocator already skips released
+    # locations after each instruction. Its EndOfAllocScope implementation is no
+    # longer byte-identical to the pinned old core, so do not rewrite the JIT's
+    # allocator until the PS5-specific optimization is rebased and tested.
+    file(READ "${PROJECT_SOURCE_DIR}/src/dynarmic/src/dynarmic/backend/x64/reg_alloc.h" eden_upstream_ra)
+    string(FIND "${eden_upstream_ra}" "if (!iter.IsReleased())" eden_upstream_ra_skip)
+    if(NOT eden_upstream_ra_skip LESS 0)
+        message(STATUS "Using newer upstream Dynarmic register allocator without PS5 override")
+    else()
+        eden_reg_alloc_sources()
+    endif()
 endif()
 
 # Patch lookup must not create a large empty record for every compiled block.
