@@ -132,17 +132,16 @@ void RasterizerVulkan::DispatchCompute() {"""),
     }()};
     ::Eden::Performance::Mark(::Eden::Performance::draw_pipeline, phase);
 '''),
-    ('''    pipeline->SetEngine(maxwell3d, gpu_memory);
-    if (Profile::Scope scope{Profile::Zone::Configure}; !pipeline->Configure(is_indexed)) {
+    # Preserve the pinned core's vertex repack layout block between these two calls.
+    ('    pipeline->SetEngine(maxwell3d, gpu_memory);',
+     '    pipeline->SetEngine(maxwell3d, gpu_memory);\\n'
+     '    ::Eden::Performance::Mark(::Eden::Performance::draw_lock_wait, phase);'),
+    ('''    if (Profile::Scope scope{Profile::Zone::Configure}; !pipeline->Configure(is_indexed)) {
         report_failure("configure failed");
         return;
     }
 ''',
-     '''    pipeline->SetEngine(maxwell3d, gpu_memory);
-    // Waiting for both cache mutexes. SetEngine between them and here is two pointer assignments,
-    // and the hold itself carries on through what follows: the phases below measure it.
-    ::Eden::Performance::Mark(::Eden::Performance::draw_lock_wait, phase);
-    if (Profile::Scope scope{Profile::Zone::Configure}; !pipeline->Configure(is_indexed)) {
+     '''    if (Profile::Scope scope{Profile::Zone::Configure}; !pipeline->Configure(is_indexed)) {
         report_failure("configure failed");
         return;
     }
